@@ -45,7 +45,7 @@ def run_gmm_experiments(pca_results, y_train, y_test, alphas, K_values):
         X_test_pca = pca_results[alpha]["X_test_pca"]
 
         for K in K_values:
-            gmm = GMM(n_components=K, covariance_type='tied', random_state=0, backend='sklearn')
+            gmm = GMM(n_components=K, covariance_type='tied', random_state=0)
             gmm.fit(X_train_pca)
             
             train_clusters = gmm.predict(X_train_pca)

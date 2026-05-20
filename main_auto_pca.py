@@ -99,7 +99,7 @@ def run_gmm(Z_train, Z_test, y_train, y_test, k=40):
         Z_tr = (Z_train[:, active] - mu[active]) / (std[active] + 1e-8)
         Z_te = (Z_test[:, active] - mu[active]) / (std[active] + 1e-8)
 
-    gmm = GMM(n_components=k, covariance_type='tied', random_state=0, backend='sklearn')
+    gmm = GMM(n_components=k, covariance_type='tied', random_state=0)
     gmm.fit(Z_tr)
 
     mapping = map_clusters_to_labels(gmm.predict(Z_tr), y_train, k)

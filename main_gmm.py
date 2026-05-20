@@ -16,7 +16,7 @@ from utilities.evaluate import (
     evaluate_clustering
 )
 
-def main(dataset_root, backend='sklearn'):
+def main(dataset_root):
     print("=" * 70)
     print(f"LOADING DATASET ({dataset_root})")
     print("=" * 70)
@@ -43,7 +43,7 @@ def main(dataset_root, backend='sklearn'):
     results = []
 
     print("\n" + "=" * 70)
-    print(f"RUNNING GMM EXPERIMENTS (Backend: {backend})")
+    print("RUNNING GMM EXPERIMENTS")
     print("=" * 70)
 
     for alpha in alphas:
@@ -63,8 +63,7 @@ def main(dataset_root, backend='sklearn'):
                 covariance_type='tied',
                 max_iters=150,
                 tol=1e-4,
-                random_state=0,
-                backend=backend
+                random_state=0
             )
 
             gmm.fit(X_train_pca)
@@ -210,11 +209,4 @@ def main(dataset_root, backend='sklearn'):
 
 if __name__ == "__main__":
     dataset_root = "./archive"
-    
-    # Run with custom backend or sklearn backend.
-    # Defaulting to sklearn for baseline stability, but you can pass 'custom' to test the EM code!
-    backend_arg = 'sklearn'
-    if len(sys.argv) > 1:
-        backend_arg = sys.argv[1]
-        
-    main(dataset_root, backend=backend_arg)
+    main(dataset_root)

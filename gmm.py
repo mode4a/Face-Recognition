@@ -1,5 +1,4 @@
 import numpy as np
-from sklearn.mixture import GaussianMixture
 from kmeans import KMeans
 
 def logsumexp(a, axis=None, keepdims=False):
@@ -23,12 +22,9 @@ class GMM:
     """
     Gaussian Mixture Model (GMM) Clustering.
     
-    Supports two backends:
-      1. 'custom': A from-scratch, highly optimized vectorized Expectation-Maximization (EM) 
-                   implementation supporting 'diagonal' and 'tied' covariance types.
-                   Initialized using your teammate's custom KMeans class.
-      2. 'sklearn': A wrapper around sklearn.mixture.GaussianMixture for production-grade
-                    speed, stability, and handling of full covariance matrices.
+    A from-scratch, highly optimized vectorized Expectation-Maximization (EM) 
+    implementation supporting 'diagonal' and 'tied' covariance types.
+    Initialized using your teammate's custom KMeans class.
     
     Parameters
     ----------
@@ -36,7 +32,7 @@ class GMM:
         Number of mixture components / clusters.
     covariance_type : str
         String describing the type of covariance parameters to be used.
-        Options: 'tied' (recommended for high accuracy and beating KMeans), 'diagonal', or 'full'.
+        Options: 'tied' (recommended for high accuracy and beating KMeans) or 'diagonal'.
     max_iters : int
         Maximum number of EM iterations to run.
     tol : float
@@ -47,8 +43,6 @@ class GMM:
         to ensure positive-definiteness and numerical stability.
     random_state : int
         Seed for reproducibility of initialization.
-    backend : str
-        Backend to use. Options: 'custom' or 'sklearn'.
     """
     def __init__(
         self,
@@ -57,8 +51,7 @@ class GMM:
         max_iters: int = 150,
         tol: float = 1e-4,
         reg_covar: float = 1e-6,
-        random_state: int = 42,
-        backend: str = 'sklearn'
+        random_state: int = 42
     ):
         self.n_components = n_components
         self.covariance_type = covariance_type
@@ -66,40 +59,20 @@ class GMM:
         self.tol = tol
         self.reg_covar = reg_covar
         self.random_state = random_state
-        self.backend = backend
         
         # Parameters to fit (custom GMM)
         self.weights = None
         self.means = None
         self.covariances = None  # shape (K, D) for diagonal, or (D,) for tied shared diagonal
-        
-        # Scikit-learn model placeholder
-        self.model = None
 
     def fit(self, X: np.ndarray):
         """
         Fit GMM on data X.
         """
-        if self.backend == 'sklearn':
-            self.model = GaussianMixture(
-                n_components=self.n_components,
-                covariance_type=self.covariance_type,
-                max_iter=self.max_iters,
-                tol=self.tol,
-                reg_covar=self.reg_covar,
-                random_state=self.random_state
-            )
-            self.model.fit(X)
-            return self
-            
-        elif self.backend == 'custom':
-            if self.covariance_type not in ['diagonal', 'tied']:
-                raise ValueError("Custom backend only supports 'diagonal' or 'tied' covariance types. Use backend='sklearn' for 'full' covariance.")
-            self._fit_custom(X)
-            return self
-            
-        else:
-            raise ValueError(f"Unknown backend '{self.backend}'. Use 'custom' or 'sklearn'.")
+        if self.covariance_type not in ['diagonal', 'tied']:
+            raise ValueError("Custom GMM only supports 'diagonal' or 'tied' covariance types.")
+        self._fit_custom(X)
+        return self
 
     def _fit_custom(self, X: np.ndarray):
         """
@@ -210,12 +183,8 @@ class GMM:
         """
         Predict cluster index for each sample in X.
         """
-        if self.backend == 'sklearn':
-            return self.model.predict(X)
-            
-        elif self.backend == 'custom':
-            responsibilities, _ = self._e_step(X)
-            return np.argmax(responsibilities, axis=1)
+        responsibilities, _ = self._e_step(X)
+        return np.argmax(responsibilities, axis=1)
 
     def fit_predict(self, X: np.ndarray) -> np.ndarray:
         """
