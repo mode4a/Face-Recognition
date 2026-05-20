@@ -52,55 +52,36 @@ def show_reconstructions(
         save_path="reconstructions.png"
 ):
 
-    indices = np.random.choice(
-        len(X_test),
-        size=n,
-        replace=False
-    )
-
+    indices = np.random.choice(len(X_test), size=n, replace=False)
     X_sample = X_test[indices]
+    X_rec    = np.clip(ae.decode(ae.encode(X_sample)), 0, 1)
 
-    Z = ae.encode(X_sample)
-
-    X_rec = ae.decode(Z)
-
-    X_rec = np.clip(X_rec, 0, 1)
-
-    fig, axes = plt.subplots(
-        2,
-        n,
-        figsize=(2 * n, 5)
-    )
-
+    fig, axes = plt.subplots(2, n, figsize=(2 * n, 5))
     fig.suptitle("Original vs Reconstructed")
 
     for i in range(n):
-
-        axes[0, i].imshow(
-            X_sample[i].reshape(img_shape),
-            cmap="gray"
-        )
-
+        axes[0, i].imshow(X_sample[i].reshape(img_shape), cmap="gray")
         axes[0, i].axis("off")
-
-        axes[1, i].imshow(
-            X_rec[i].reshape(img_shape),
-            cmap="gray"
-        )
-
+        axes[1, i].imshow(X_rec[i].reshape(img_shape), cmap="gray")
         axes[1, i].axis("off")
 
     plt.tight_layout()
-
-    plt.savefig(
-        save_path,
-        dpi=120,
-        bbox_inches="tight"
-    )
-
+    plt.savefig(save_path, dpi=120, bbox_inches="tight")
     plt.close()
-
     print(f"[AE] reconstruction saved -> {save_path}")
+
+def run_kmeans(Z_train, Z_test, y_train, y_test, k=40):
+
+    Z_tr = Z_train
+    Z_te = Z_test
+
+    km = KMeans(k=k)
+    km.fit(Z_tr)
+
+    mapping = map_clusters_to_labels(km.predict(Z_tr), y_train, k)
+    y_pred  = np.array([mapping[c] for c in km.predict(Z_te)])
+
+    return compute_accuracy(y_test, y_pred)
 
 
 # ============================================================
@@ -113,203 +94,139 @@ def main(dataset_root):
     print("=" * 60)
 
     D, y = load_dataset(dataset_root)
-
     X_train, X_test, y_train, y_test = split_dataset(D, y)
 
-    # ========================================================
-    # NORMALIZATION
-    # ========================================================
     X_train = X_train.astype(np.float32) / 255.0
+    X_test  = X_test.astype(np.float32)  / 255.0
 
-    X_test = X_test.astype(np.float32) / 255.0
+    k = 40
 
     # ========================================================
-    # PCA + KMEANS
+    # PCA
     # ========================================================
     print("\n" + "=" * 60)
     print("PCA + KMEANS")
     print("=" * 60)
 
-    pca_results = run_pca(
-        X_train,
-        X_test,
-        show_plots=False
-    )
+    pca_results = run_pca(X_train, X_test, show_plots=False)
 
-    best_pca_acc = 0
-    best_alpha = None
+    alphas     = [0.80, 0.85, 0.90, 0.95]
+    pca_dims   = {}   # alpha -> dim
+    pca_accs   = {}   # alpha -> accuracy
 
-    # ORL dataset -> 40 people
-    k = 40
-
-    for alpha in [0.80, 0.85, 0.90, 0.95]:
+    for alpha in alphas:
 
         Xtr = pca_results[alpha]["X_train_pca"]
-
         Xte = pca_results[alpha]["X_test_pca"]
+        dim = Xtr.shape[1]
 
-        # ====================================================
-        # Standardization
-        # ====================================================
-        mu = Xtr.mean(axis=0)
+        acc = run_kmeans(Xtr, Xte, y_train, y_test, k)
 
-        std = Xtr.std(axis=0) + 1e-8
+        pca_dims[alpha] = dim
+        pca_accs[alpha] = acc
 
-        Xtr = (Xtr - mu) / std
-
-        Xte = (Xte - mu) / std
-
-        # ====================================================
-        # KMeans
-        # ====================================================
-        kmeans = KMeans(k=k)
-
-        kmeans.fit(Xtr)
-
-        train_clusters = kmeans.predict(Xtr)
-
-        test_clusters = kmeans.predict(Xte)
-
-        mapping = map_clusters_to_labels(
-            train_clusters,
-            y_train,
-            k
-        )
-
-        y_pred = np.array([
-            mapping[c]
-            for c in test_clusters
-        ])
-
-        acc = compute_accuracy(
-            y_test,
-            y_pred
-        )
-
-        print(
-            f"[PCA] alpha={alpha} | "
-            f"dim={Xtr.shape[1]} | "
-            f"acc={acc:.4f}"
-        )
-
-        if acc > best_pca_acc:
-
-            best_pca_acc = acc
-
-            best_alpha = alpha
-
-    print(
-        f"\n[PCA] Best accuracy = "
-        f"{best_pca_acc:.4f} "
-        f"(alpha={best_alpha})"
-    )
+        print(f"[PCA] alpha={alpha} | dim={dim:3d} | acc={acc:.4f}")
 
     # ========================================================
-    # AUTOENCODER + KMEANS
+    # AUTOENCODER — one per alpha (latent_dim = PCA dim)
     # ========================================================
     print("\n" + "=" * 60)
-    print("AUTOENCODER + KMEANS")
+    print("AUTOENCODER + KMEANS  (tuned over all PCA dims)")
     print("=" * 60)
 
-    best_dim = pca_results[best_alpha]["X_train_pca"].shape[1]
+    ae_accs = {}   # alpha -> accuracy
 
-    ae = Autoencoder(
-        input_dim  = X_train.shape[1],   # 10304
-        latent_dim = best_dim,            # 36
-        hidden_dim = 512,
-        lr         = 5e-3,    # FIX: 5x higher — needed to push gradients
-                               #      through 4 layers back to the bottleneck
-        lr_decay   = 0.999,   # FIX: much slower decay (was 0.995)
-                               #      0.995^500 = 0.08  ← kills gradients
-                               #      0.999^500 = 0.61  ← stays healthy
-        seed       = 42,
-    )
+    for alpha in alphas:
 
-    ae.fit(
-        X_train,
-        epochs     = 100,
-        batch_size = 32,
-        verbose    = True,
-    )
+        dim = pca_dims[alpha]
 
-    # ========================================================
-    # LATENT REPRESENTATIONS
-    # ========================================================
-    Z_train = ae.encode(X_train)
-    Z_test  = ae.encode(X_test)
+        print(f"\n--- latent_dim = {dim} (alpha={alpha}) ---")
 
-    mu  = Z_train.mean(axis=0)
-    std = Z_train.std(axis=0)
+        ae = Autoencoder(
+            input_dim=X_train.shape[1],
+            latent_dim=dim
+        )
 
-    # drop dead latent dimensions (std≈0 → dividing by them = pure noise)
-    active = std > 0.01
-    print(f"\n[AE] Active latent dims : {active.sum()} / {len(active)}")
+        ae.fit(X_train, epochs=100, batch_size=32, verbose=True)
 
-    if active.sum() == 0:
-        print("[AE] WARNING: all latent dims are dead.")
-        print("[AE] Falling back to raw standardized latent vectors.")
-        # last resort: use raw (non-standardized) latent vectors
-        Z_train_km = Z_train
-        Z_test_km  = Z_test
-    else:
-        Z_train_km = (Z_train[:, active] - mu[active]) / std[active]
-        Z_test_km  = (Z_test[:,  active] - mu[active]) / std[active]
+        Z_train = ae.encode(X_train)
+        Z_test  = ae.encode(X_test)
+
+        acc = run_kmeans(Z_train, Z_test, y_train, y_test, k)
+
+        ae_accs[alpha] = acc
+
+        print(f"[AE ] alpha={alpha} | dim={dim:3d} | acc={acc:.4f}")
 
     # ========================================================
-    # KMEANS ON LATENT SPACE
-    # ========================================================
-    kmeans_ae = KMeans(k=k)
-
-    kmeans_ae.fit(Z_train_km)
-
-    train_clusters = kmeans_ae.predict(Z_train_km)
-
-    test_clusters = kmeans_ae.predict(Z_test_km)
-
-    mapping = map_clusters_to_labels(
-        train_clusters,
-        y_train,
-        k
-    )
-
-    y_pred = np.array([
-        mapping[c]
-        for c in test_clusters
-    ])
-
-    ae_acc = compute_accuracy(
-        y_test,
-        y_pred
-    )
-
-    print(f"\n[AE] accuracy = {ae_acc:.4f}")
-
-    # ========================================================
-    # RECONSTRUCTIONS
-    # ========================================================
-    show_reconstructions(
-        ae,
-        X_test
-    )
-
-    # ========================================================
-    # FINAL RESULTS
+    # COMPARISON TABLE
     # ========================================================
     print("\n" + "=" * 60)
-    print("FINAL RESULT")
+    print("FINAL COMPARISON")
     print("=" * 60)
+    print(f"{'Alpha':<8} {'Dim':<6} {'PCA acc':<12} {'AE acc':<12} {'Winner'}")
+    print("-" * 52)
 
-    print(f"PCA + KMeans : {best_pca_acc:.4f}")
+    best_pca_acc = 0
+    best_ae_acc  = 0
+    best_pca_alpha = None
+    best_ae_alpha  = None
 
-    print(f"AE  + KMeans : {ae_acc:.4f}")
+    for alpha in alphas:
 
-    if ae_acc > best_pca_acc:
+        dim     = pca_dims[alpha]
+        pca_acc = pca_accs[alpha]
+        ae_acc  = ae_accs[alpha]
+        winner  = "AE ✔" if ae_acc > pca_acc else "PCA ✔"
 
-        print("\nAutoencoder wins ✔")
+        print(f"{alpha:<8} {dim:<6} {pca_acc:<12.4f} {ae_acc:<12.4f} {winner}")
 
-    else:
+        if pca_acc > best_pca_acc:
+            best_pca_acc   = pca_acc
+            best_pca_alpha = alpha
 
-        print("\nPCA wins ✔")
+        if ae_acc > best_ae_acc:
+            best_ae_acc   = ae_acc
+            best_ae_alpha = alpha
+
+    print("-" * 52)
+    print(f"\nBest PCA : acc={best_pca_acc:.4f}  (alpha={best_pca_alpha}, dim={pca_dims[best_pca_alpha]})")
+    print(f"Best AE  : acc={best_ae_acc:.4f}  (alpha={best_ae_alpha},  dim={pca_dims[best_ae_alpha]})")
+
+    overall_winner = "Autoencoder" if best_ae_acc > best_pca_acc else "PCA"
+    print(f"\nOverall winner : {overall_winner} ✔")
+
+    # ========================================================
+    # SAVE RECONSTRUCTIONS for the best AE dim
+    # ========================================================
+    best_dim = pca_dims[best_ae_alpha]
+
+    ae_best = Autoencoder(input_dim=X_train.shape[1], latent_dim=best_dim)
+    ae_best.fit(X_train, epochs=100, batch_size=32, verbose=False)
+    show_reconstructions(ae_best, X_test)
+
+    # ========================================================
+    # ACCURACY BAR CHART
+    # ========================================================
+    x      = np.arange(len(alphas))
+    width  = 0.35
+    labels = [f"α={a}\ndim={pca_dims[a]}" for a in alphas]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - width / 2, [pca_accs[a] for a in alphas], width, label="PCA + KMeans")
+    ax.bar(x + width / 2, [ae_accs[a]  for a in alphas], width, label="AE  + KMeans")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Accuracy")
+    ax.set_title("PCA vs Autoencoder accuracy per latent dimension")
+    ax.legend()
+    ax.set_ylim(0, 1)
+
+    plt.tight_layout()
+    plt.savefig("comparison.png", dpi=120, bbox_inches="tight")
+    plt.close()
+    print("\n[plot] comparison saved -> comparison.png")
 
 
 # ============================================================
