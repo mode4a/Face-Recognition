@@ -73,14 +73,37 @@ def show_reconstructions(
 
 def run_kmeans(Z_train, Z_test, y_train, y_test, k=40):
 
-    Z_tr = Z_train
-    Z_te = Z_test
+    mu = Z_train.mean(axis=0)
+    std = Z_train.std(axis=0) + 1e-8
+    Z_tr = (Z_train - mu) / std
+    Z_te = (Z_test - mu) / std
 
     km = KMeans(k=k)
     km.fit(Z_tr)
 
     mapping = map_clusters_to_labels(km.predict(Z_tr), y_train, k)
     y_pred  = np.array([mapping[c] for c in km.predict(Z_te)])
+
+    return compute_accuracy(y_test, y_pred)
+
+def run_gmm(Z_train, Z_test, y_train, y_test, k=40):
+    mu = Z_train.mean(axis=0)
+    std = Z_train.std(axis=0)
+
+    # Filter out dead latent dimensions
+    active = std > 0.001
+    if np.sum(active) == 0:
+        Z_tr = Z_train
+        Z_te = Z_test
+    else:
+        Z_tr = (Z_train[:, active] - mu[active]) / (std[active] + 1e-8)
+        Z_te = (Z_test[:, active] - mu[active]) / (std[active] + 1e-8)
+
+    gmm = GMM(n_components=k, covariance_type='tied', random_state=0, backend='sklearn')
+    gmm.fit(Z_tr)
+
+    mapping = map_clusters_to_labels(gmm.predict(Z_tr), y_train, k)
+    y_pred  = np.array([mapping[c] for c in gmm.predict(Z_te)])
 
     return compute_accuracy(y_test, y_pred)
 
@@ -111,41 +134,44 @@ def main(dataset_root):
 
     pca_results = run_pca(X_train, X_test, show_plots=False)
 
-    alphas     = [0.80, 0.85, 0.90, 0.95]
-    pca_dims   = {}   # alpha -> dim
-    pca_accs   = {}   # alpha -> accuracy
+    alphas = [0.80, 0.85, 0.90, 0.95]
+    pca_dims = {}
+    pca_accs_km = {}
+    pca_accs_gmm = {}
 
     for alpha in alphas:
-
         Xtr = pca_results[alpha]["X_train_pca"]
         Xte = pca_results[alpha]["X_test_pca"]
         dim = Xtr.shape[1]
 
-        acc = run_kmeans(Xtr, Xte, y_train, y_test, k)
+        acc_km = run_kmeans(Xtr, Xte, y_train, y_test, k)
+        acc_gmm = run_gmm(Xtr, Xte, y_train, y_test, k)
 
         pca_dims[alpha] = dim
-        pca_accs[alpha] = acc
+        pca_accs_km[alpha] = acc_km
+        pca_accs_gmm[alpha] = acc_gmm
 
-        print(f"[PCA] alpha={alpha} | dim={dim:3d} | acc={acc:.4f}")
+        print(f"[PCA] alpha={alpha} | dim={dim:3d} | KMeans acc={acc_km:.4f} | GMM acc={acc_gmm:.4f}")
 
     # ========================================================
     # AUTOENCODER — one per alpha (latent_dim = PCA dim)
     # ========================================================
     print("\n" + "=" * 60)
-    print("AUTOENCODER + KMEANS  (tuned over all PCA dims)")
+    print("AUTOENCODER + KMEANS & GMM (tuned over all PCA dims)")
     print("=" * 60)
 
-    ae_accs = {}   # alpha -> accuracy
+    ae_accs_km = {}
+    ae_accs_gmm = {}
 
     for alpha in alphas:
-
         dim = pca_dims[alpha]
 
         print(f"\n--- latent_dim = {dim} (alpha={alpha}) ---")
 
         ae = Autoencoder(
             input_dim=X_train.shape[1],
-            latent_dim=dim
+            latent_dim=dim,
+            lr=0.005
         )
 
         ae.fit(X_train, epochs=100, batch_size=32, verbose=True)
@@ -153,81 +179,150 @@ def main(dataset_root):
         Z_train = ae.encode(X_train)
         Z_test  = ae.encode(X_test)
 
-        acc = run_kmeans(Z_train, Z_test, y_train, y_test, k)
+        acc_km = run_kmeans(Z_train, Z_test, y_train, y_test, k)
+        acc_gmm = run_gmm(Z_train, Z_test, y_train, y_test, k)
 
-        ae_accs[alpha] = acc
+        ae_accs_km[alpha] = acc_km
+        ae_accs_gmm[alpha] = acc_gmm
 
-        print(f"[AE ] alpha={alpha} | dim={dim:3d} | acc={acc:.4f}")
+        print(f"[AE ] alpha={alpha} | dim={dim:3d} | KMeans acc={acc_km:.4f} | GMM acc={acc_gmm:.4f}")
 
     # ========================================================
-    # COMPARISON TABLE
+    # FINAL COMPARISON FOR K-MEANS
     # ========================================================
     print("\n" + "=" * 60)
-    print("FINAL COMPARISON")
+    print("FINAL K-MEANS COMPARISON")
     print("=" * 60)
     print(f"{'Alpha':<8} {'Dim':<6} {'PCA acc':<12} {'AE acc':<12} {'Winner'}")
     print("-" * 52)
 
-    best_pca_acc = 0
-    best_ae_acc  = 0
-    best_pca_alpha = None
-    best_ae_alpha  = None
+    best_pca_km_acc = 0
+    best_ae_km_acc  = 0
+    best_pca_km_alpha = None
+    best_ae_km_alpha  = None
 
     for alpha in alphas:
-
         dim     = pca_dims[alpha]
-        pca_acc = pca_accs[alpha]
-        ae_acc  = ae_accs[alpha]
+        pca_acc = pca_accs_km[alpha]
+        ae_acc  = ae_accs_km[alpha]
         winner  = "AE ✔" if ae_acc > pca_acc else "PCA ✔"
 
         print(f"{alpha:<8} {dim:<6} {pca_acc:<12.4f} {ae_acc:<12.4f} {winner}")
 
-        if pca_acc > best_pca_acc:
-            best_pca_acc   = pca_acc
-            best_pca_alpha = alpha
+        if pca_acc > best_pca_km_acc:
+            best_pca_km_acc   = pca_acc
+            best_pca_km_alpha = alpha
 
-        if ae_acc > best_ae_acc:
-            best_ae_acc   = ae_acc
-            best_ae_alpha = alpha
+        if ae_acc > best_ae_km_acc:
+            best_ae_km_acc   = ae_acc
+            best_ae_km_alpha = alpha
 
     print("-" * 52)
-    print(f"\nBest PCA : acc={best_pca_acc:.4f}  (alpha={best_pca_alpha}, dim={pca_dims[best_pca_alpha]})")
-    print(f"Best AE  : acc={best_ae_acc:.4f}  (alpha={best_ae_alpha},  dim={pca_dims[best_ae_alpha]})")
+    print(f"Best PCA KMeans: acc={best_pca_km_acc:.4f}  (alpha={best_pca_km_alpha}, dim={pca_dims[best_pca_km_alpha]})")
+    print(f"Best AE KMeans : acc={best_ae_km_acc:.4f}  (alpha={best_ae_km_alpha},  dim={pca_dims[best_ae_km_alpha]})")
 
-    overall_winner = "Autoencoder" if best_ae_acc > best_pca_acc else "PCA"
-    print(f"\nOverall winner : {overall_winner} ✔")
+    # ========================================================
+    # FINAL COMPARISON FOR GMM
+    # ========================================================
+    print("\n" + "=" * 60)
+    print("FINAL GMM COMPARISON")
+    print("=" * 60)
+    print(f"{'Alpha':<8} {'Dim':<6} {'PCA acc':<12} {'AE acc':<12} {'Winner'}")
+    print("-" * 52)
+
+    best_pca_gmm_acc = 0
+    best_ae_gmm_acc  = 0
+    best_pca_gmm_alpha = None
+    best_ae_gmm_alpha  = None
+
+    for alpha in alphas:
+        dim     = pca_dims[alpha]
+        pca_acc = pca_accs_gmm[alpha]
+        ae_acc  = ae_accs_gmm[alpha]
+        winner  = "AE ✔" if ae_acc > pca_acc else "PCA ✔"
+
+        print(f"{alpha:<8} {dim:<6} {pca_acc:<12.4f} {ae_acc:<12.4f} {winner}")
+
+        if pca_acc > best_pca_gmm_acc:
+            best_pca_gmm_acc   = pca_acc
+            best_pca_gmm_alpha = alpha
+
+        if ae_acc > best_ae_gmm_acc:
+            best_ae_gmm_acc   = ae_acc
+            best_ae_gmm_alpha = alpha
+
+    print("-" * 52)
+    print(f"Best PCA GMM: acc={best_pca_gmm_acc:.4f}  (alpha={best_pca_gmm_alpha}, dim={pca_dims[best_pca_gmm_alpha]})")
+    print(f"Best AE GMM : acc={best_ae_gmm_acc:.4f}  (alpha={best_ae_gmm_alpha},  dim={pca_dims[best_ae_gmm_alpha]})")
+
+    # ========================================================
+    # OVERALL ANALYSIS
+    # ========================================================
+    print("\n" + "=" * 60)
+    print("OVERALL BEST PERFORMER ANALYSIS")
+    print("=" * 60)
+    methods = {
+        "PCA + KMeans": best_pca_km_acc,
+        "AE + KMeans": best_ae_km_acc,
+        "PCA + GMM": best_pca_gmm_acc,
+        "AE + GMM": best_ae_gmm_acc
+    }
+    overall_winner = max(methods, key=methods.get)
+    print(f"Overall Winner : {overall_winner} ✔ (accuracy = {methods[overall_winner]:.4f})")
+    print("=" * 60)
 
     # ========================================================
     # SAVE RECONSTRUCTIONS for the best AE dim
     # ========================================================
+    best_ae_alpha = best_ae_km_alpha if best_ae_km_acc > best_ae_gmm_acc else best_ae_gmm_alpha
     best_dim = pca_dims[best_ae_alpha]
 
-    ae_best = Autoencoder(input_dim=X_train.shape[1], latent_dim=best_dim)
+    ae_best = Autoencoder(input_dim=X_train.shape[1], latent_dim=best_dim, lr=0.005)
     ae_best.fit(X_train, epochs=100, batch_size=32, verbose=False)
     show_reconstructions(ae_best, X_test)
 
     # ========================================================
-    # ACCURACY BAR CHART
+    # ACCURACY BAR CHART - K-MEANS
     # ========================================================
     x      = np.arange(len(alphas))
     width  = 0.35
     labels = [f"α={a}\ndim={pca_dims[a]}" for a in alphas]
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.bar(x - width / 2, [pca_accs[a] for a in alphas], width, label="PCA + KMeans")
-    ax.bar(x + width / 2, [ae_accs[a]  for a in alphas], width, label="AE  + KMeans")
+    ax.bar(x - width / 2, [pca_accs_km[a] for a in alphas], width, label="PCA + KMeans")
+    ax.bar(x + width / 2, [ae_accs_km[a]  for a in alphas], width, label="AE  + KMeans")
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Accuracy")
-    ax.set_title("PCA vs Autoencoder accuracy per latent dimension")
+    ax.set_title("PCA vs Autoencoder accuracy per latent dimension (KMeans)")
     ax.legend()
     ax.set_ylim(0, 1)
 
     plt.tight_layout()
-    plt.savefig("comparison.png", dpi=120, bbox_inches="tight")
+    plt.savefig("comparison_kmeans.png", dpi=120, bbox_inches="tight")
+    plt.savefig("comparison.png", dpi=120, bbox_inches="tight")  # backward compatibility
     plt.close()
-    print("\n[plot] comparison saved -> comparison.png")
+    print("\n[plot] K-Means comparison saved -> comparison_kmeans.png")
+
+    # ========================================================
+    # ACCURACY BAR CHART - GMM
+    # ========================================================
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - width / 2, [pca_accs_gmm[a] for a in alphas], width, label="PCA + GMM", color="orange")
+    ax.bar(x + width / 2, [ae_accs_gmm[a]  for a in alphas], width, label="AE  + GMM", color="red")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Accuracy")
+    ax.set_title("PCA vs Autoencoder accuracy per latent dimension (GMM)")
+    ax.legend()
+    ax.set_ylim(0, 1)
+
+    plt.tight_layout()
+    plt.savefig("comparison_gmm.png", dpi=120, bbox_inches="tight")
+    plt.close()
+    print("[plot] GMM comparison saved -> comparison_gmm.png")
 
 
 # ============================================================
