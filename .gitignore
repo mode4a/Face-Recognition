@@ -1,0 +1,6 @@
+archive/
+pca_cache/
+__pycache__/
+pca_cache/
+*.png
+*.npy
