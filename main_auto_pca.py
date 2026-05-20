@@ -10,6 +10,7 @@ from utilities.splitData import split_dataset
 from PCA import run_pca
 from kmeans import KMeans
 from autoencoder import Autoencoder
+from gmm import GMM
 
 
 # ============================================================
@@ -105,7 +106,7 @@ def main(dataset_root):
     # PCA
     # ========================================================
     print("\n" + "=" * 60)
-    print("PCA + KMEANS")
+    print("PCA + KMEANS & GMM")
     print("=" * 60)
 
     pca_results = run_pca(X_train, X_test, show_plots=False)
